@@ -136,12 +136,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = query.from_user.first_name
     data = query.data
     
+    # Debug logging
+    print(f"🔘 Button clicked: {data} by user {user_id}")
+    logger.info(f"Button pressed: {data} by user {user_id}")
+    
     if 'onboarding' not in context.user_data:
         context.user_data['onboarding'] = {}
     
-    # --- CATEGORY HANDLERS ---
+    # ========== CATEGORY HANDLERS ==========
     
     if data == 'cat_placements':
+        print(f"📂 Category: Placements selected by {user_id}")
         keyboard = [
             [InlineKeyboardButton("TCS NQT", callback_data="exam_TCS NQT")],
             [InlineKeyboardButton("Infosys", callback_data="exam_Infosys")],
@@ -161,6 +166,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data == 'cat_government':
+        print(f"📂 Category: Government selected by {user_id}")
         keyboard = [
             [InlineKeyboardButton("SSC CGL", callback_data="exam_SSC CGL")],
             [InlineKeyboardButton("SSC CHSL", callback_data="exam_SSC CHSL")],
@@ -180,6 +186,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data == 'cat_mba_gate':
+        print(f"📂 Category: MBA/GATE selected by {user_id}")
         keyboard = [
             [InlineKeyboardButton("CAT / MBA Entrance", callback_data="exam_CAT")],
             [InlineKeyboardButton("GATE", callback_data="exam_GATE")],
@@ -194,6 +201,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data == 'cat_semester':
+        print(f"📂 Category: Semester selected by {user_id}")
         keyboard = [
             [InlineKeyboardButton("Semester Exams", callback_data="exam_Semester")],
             [InlineKeyboardButton("Other", callback_data="exam_Other")],
@@ -208,15 +216,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     elif data == 'back_to_start':
+        print(f"⬅️ Back to start by {user_id}")
         await start(update, context)
         return
     
-    # --- EXAM SELECTED (Direct exams like NEET, JEE, etc.) ---
+    # ========== DIRECT EXAMS (NEET, JEE, etc.) ==========
     
-    elif data.startswith('exam_') and not data.startswith('exam_TCS') and not data.startswith('exam_Infosys'):
+    elif data in ['exam_NEET', 'exam_JEE', 'exam_CAT', 'exam_GATE', 'exam_Semester', 'exam_Other']:
         exam = data.replace('exam_', '')
         exam_display = exam.replace('_', ' ')
         context.user_data['onboarding']['exam'] = exam_display
+        print(f"📚 Direct exam selected: {exam_display} by {user_id}")
         
         keyboard = [
             [InlineKeyboardButton("🌅 Early Morning (5-8 AM)", callback_data="time_5_8")],
@@ -236,12 +246,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # --- COMPANY EXAM SELECTED ---
+    # ========== COMPANY EXAMS ==========
     
-    elif data.startswith('exam_'):
+    elif data.startswith('exam_') and data not in ['exam_NEET', 'exam_JEE', 'exam_CAT', 'exam_GATE', 'exam_Semester', 'exam_Other']:
         exam = data.replace('exam_', '')
         exam_display = exam.replace('_', ' ')
         context.user_data['onboarding']['exam'] = exam_display
+        print(f"🏢 Company exam selected: {exam_display} by {user_id}")
         
         keyboard = [
             [InlineKeyboardButton("🌅 Early Morning (5-8 AM)", callback_data="time_5_8")],
@@ -259,8 +270,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        return
     
-    # --- TIME SELECTED ---
+    # ========== TIME SELECTED ==========
     
     elif data.startswith('time_'):
         time_slot = data.replace('time_', '')
@@ -275,16 +287,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data['onboarding']['time'] = time_display
         context.user_data['onboarding']['time_slot'] = time_slot
+        print(f"⏰ Time selected: {time_display} by {user_id}")
         
         keyboard = [
-            [InlineKeyboardButton("English", callback_data="lang_English")],
-            [InlineKeyboardButton("हिंदी (Hindi)", callback_data="lang_Hindi")],
-            [InlineKeyboardButton("मराठी (Marathi)", callback_data="lang_Marathi")],
-            [InlineKeyboardButton("தமிழ் (Tamil)", callback_data="lang_Tamil")],
-            [InlineKeyboardButton("తెలుగు (Telugu)", callback_data="lang_Telugu")],
-            [InlineKeyboardButton("বাংলা (Bengali)", callback_data="lang_Bengali")],
-            [InlineKeyboardButton("ಕನ್ನಡ (Kannada)", callback_data="lang_Kannada")],
-            [InlineKeyboardButton("മലയാളം (Malayalam)", callback_data="lang_Malayalam")],
+            [InlineKeyboardButton("🇬🇧 English", callback_data="lang_English")],
+            [InlineKeyboardButton("🇮🇳 हिंदी (Hindi)", callback_data="lang_Hindi")],
+            [InlineKeyboardButton("🇮🇳 मराठी (Marathi)", callback_data="lang_Marathi")],
+            [InlineKeyboardButton("🇮🇳 தமிழ் (Tamil)", callback_data="lang_Tamil")],
+            [InlineKeyboardButton("🇮🇳 తెలుగు (Telugu)", callback_data="lang_Telugu")],
+            [InlineKeyboardButton("🇮🇳 বাংলা (Bengali)", callback_data="lang_Bengali")],
+            [InlineKeyboardButton("🇮🇳 ಕನ್ನಡ (Kannada)", callback_data="lang_Kannada")],
+            [InlineKeyboardButton("🇮🇳 മലയാളം (Malayalam)", callback_data="lang_Malayalam")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -295,29 +308,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        return
     
-    # --- LANGUAGE SELECTED - COMPLETE REGISTRATION ---
+    # ========== LANGUAGE SELECTED - COMPLETE REGISTRATION ==========
     
     elif data.startswith('lang_'):
-        language = data.replace('lang_', '')
-        language = language.split(' ')[0]  # Remove parentheses part
+        print(f"🗣️ Language button detected: {data} by {user_id}")
+        
+        # Extract language (remove 'lang_' prefix and any parentheses)
+        language_raw = data.replace('lang_', '')
+        # Remove anything in parentheses like (Hindi)
+        language = language_raw.split(' ')[0] if ' ' in language_raw else language_raw
         context.user_data['onboarding']['language'] = language
         
+        # Get values from onboarding
         exam = context.user_data['onboarding'].get('exam', 'Unknown')
         study_time = context.user_data['onboarding'].get('time', 'Unknown')
+        
+        print(f"📝 Completing registration for {user_name}:")
+        print(f"   📚 Exam: {exam}")
+        print(f"   ⏰ Time: {study_time}")
+        print(f"   🗣️ Language: {language}")
         
         # Save user to database
         conn = get_conn()
         c = conn.cursor()
-        c.execute("""INSERT OR REPLACE INTO users 
-            (user_id, username, first_name, exam, study_time, language)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, query.from_user.username, user_name, exam, study_time, language))
+        
+        # Check if user already exists
+        c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        existing = c.fetchone()
+        
+        if existing:
+            print(f"   ℹ️ User {user_id} already exists, updating...")
+            c.execute("""UPDATE users 
+                SET username = ?, first_name = ?, exam = ?, study_time = ?, language = ?
+                WHERE user_id = ?""",
+                (query.from_user.username, user_name, exam, study_time, language, user_id))
+        else:
+            print(f"   ✅ Creating new user {user_id}")
+            c.execute("""INSERT INTO users 
+                (user_id, username, first_name, exam, study_time, language, reputation, streak)
+                VALUES (?, ?, ?, ?, ?, ?, 40, 0)""",
+                (user_id, query.from_user.username, user_name, exam, study_time, language))
+        
         conn.commit()
         
         # Check for match in waiting queue
+        print(f"   🔍 Checking for match with exam='{exam}' and time='{study_time}'")
         c.execute("""SELECT user_id, first_name, username FROM waiting_queue 
-                     WHERE exam=? AND study_time=? AND user_id!=?""",
+                     WHERE exam = ? AND study_time = ? AND user_id != ?
+                     ORDER BY joined_at ASC LIMIT 1""",
                   (exam, study_time, user_id))
         match = c.fetchone()
         
@@ -325,16 +365,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             partner_id, partner_name, partner_username = match
             now = datetime.utcnow().isoformat()
             
+            print(f"   🎯 MATCH FOUND! {user_name} <-> {partner_name}")
+            
             # Link partners
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (partner_id, now, user_id))
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (user_id, now, partner_id))
-            c.execute("DELETE FROM waiting_queue WHERE user_id=?", (partner_id,))
-            c.execute("""INSERT INTO pending_groups (user1_id, user2_id, matched_at)
-                         VALUES (?, ?, ?)""", (user_id, partner_id, now))
+            c.execute("UPDATE users SET partner_id = ?, matched_at = ? WHERE user_id = ?", 
+                     (partner_id, now, user_id))
+            c.execute("UPDATE users SET partner_id = ?, matched_at = ? WHERE user_id = ?", 
+                     (user_id, now, partner_id))
+            c.execute("DELETE FROM waiting_queue WHERE user_id = ?", (partner_id,))
+            c.execute("""INSERT INTO pending_groups (user1_id, user2_id, matched_at, status)
+                         VALUES (?, ?, ?, 'pending')""", (user_id, partner_id, now))
             conn.commit()
             conn.close()
             
-            # ========== ADMIN NOTIFICATION ==========
+            # ========== SEND ADMIN NOTIFICATION ==========
             admin_message = f"""
 🎯 *NEW MATCH ALERT!*
 
@@ -375,11 +419,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text=admin_message,
                     parse_mode="Markdown"
                 )
-                logger.info(f"✅ Admin notification sent for match: {user_id} & {partner_id}")
-                print(f"✅ Admin notification sent to {ADMIN_USER_ID}")
+                print(f"   ✅ Admin notification sent to {ADMIN_USER_ID}")
             except Exception as e:
-                logger.error(f"❌ Failed to send admin notification: {e}")
-                print(f"❌ ERROR sending to admin {ADMIN_USER_ID}: {e}")
+                print(f"   ❌ Failed to send admin notification: {e}")
             
             # Notify users
             await context.bot.send_message(
@@ -407,13 +449,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 f"🎉 *Registration complete!*\n\n"
                 f"✅ Matched with *{partner_name}*\n\n"
-                f"Admin will create your study group soon!",
+                f"Admin will create your study group soon!\n\n"
+                f"Use /streak to track your progress! 🔥",
                 parse_mode="Markdown"
             )
             
         else:
-            # Add to waiting queue
-            c.execute("""INSERT INTO waiting_queue 
+            # No match found - add to waiting queue
+            print(f"   ⏳ No match found - adding {user_name} to waiting queue")
+            c.execute("""INSERT OR REPLACE INTO waiting_queue 
                 (user_id, exam, study_time, language, joined_at)
                 VALUES (?, ?, ?, ?, ?)""",
                 (user_id, exam, study_time, language, datetime.utcnow().isoformat()))
@@ -427,10 +471,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🗣 *Language:* {language}\n\n"
                 f"⏳ *Looking for your study partner...*\n"
                 f"You will be notified when matched!\n\n"
-                f"📖 Use /rules to learn how this works.",
+                f"📖 Use /rules to learn how this works.\n"
+                f"🔥 Use /checkin to start your streak!",
                 parse_mode="Markdown"
             )
-
+        
+        print(f"   ✅ Registration completed for {user_name}")
+        return
+    
+    else:
+        # Unknown callback data
+        print(f"⚠️ Unknown callback data: {data} from user {user_id}")
+        await query.edit_message_text(
+            "❌ Something went wrong. Please use /start to begin again.",
+            parse_mode="Markdown"
+        )
+        
+        
 # ================= CHECKIN COMMAND =================
 async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
