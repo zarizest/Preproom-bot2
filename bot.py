@@ -150,13 +150,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             VALUES (?, ?, ?, ?, ?, ?)""",
             (user.id, user.username, user.first_name, exam, study_time, language))
 
-        c.execute("""SELECT user_id, first_name FROM waiting_queue
+        c.execute("""SELECT user_id FROM waiting_queue
                      WHERE exam=? AND study_time=? AND user_id!=?""",
                   (exam, study_time, user.id))
-        match = c.fetchone()
+match = c.fetchone()
 
-        if match:
-            partner_id, partner_name = match
+if match:
+    partner_id = match[0]
+    c.execute("SELECT first_name FROM users WHERE user_id=?", (partner_id,))
+    name_row = c.fetchone()
+    partner_name = name_row[0] if name_row else "Study Partner"
             now = datetime.now(INDIA_TZ).isoformat()
 
             c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
