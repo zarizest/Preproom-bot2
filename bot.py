@@ -1,15 +1,15 @@
 import os
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 import pytz
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # ================= CONFIGURATION =================
-TOKEN = os.getenv("TOKEN",  "8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
+TOKEN = os.getenv("TOKEN", "8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USE", "8456901459"))
 
 DB_NAME = "preproom.db"
 INDIA_TZ = pytz.timezone("Asia/Kolkata")
@@ -159,8 +159,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             partner_id, partner_name = match
             now = datetime.now(INDIA_TZ).isoformat()
 
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (partner_id, now, user.id))
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (user.id, now, partner_id))
+            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
+                      (partner_id, now, user.id))
+            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
+                      (user.id, now, partner_id))
             c.execute("DELETE FROM waiting_queue WHERE user_id=?", (partner_id,))
             c.execute("""INSERT INTO pending_groups (user1_id, user2_id, matched_at)
                          VALUES (?, ?, ?)""", (user.id, partner_id, now))
@@ -219,7 +221,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("""INSERT INTO waiting_queue
                 (user_id, exam, study_time, language, joined_at)
                 VALUES (?, ?, ?, ?, ?)""",
-                (user.id, exam, study_time, language, datetime.now(INDIA_TZ).isoformat()))
+                (user.id, exam, study_time, language,
+                 datetime.now(INDIA_TZ).isoformat()))
             conn.commit()
             conn.close()
 
@@ -234,18 +237,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
-# ================= CHECKIN COMMAND =================
+# ================= CHECKIN =================
 async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     today_date = today()
 
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT streak, last_checkin, partner_id, group_id, reputation FROM users WHERE user_id=?", (user_id,))
+    c.execute("""SELECT streak, last_checkin, partner_id, 
+                 group_id, reputation FROM users WHERE user_id=?""",
+              (user_id,))
     row = c.fetchone()
 
     if not row:
-        await update.message.reply_text("❌ *Not registered!* Use /start first.", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *Not registered!* Use /start first.",
+            parse_mode="Markdown")
         conn.close()
         return
 
@@ -253,7 +260,9 @@ async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = parse_date(last_checkin)
 
     if last == today_date:
-        await update.message.reply_text("✅ *Already checked in today!* Come back tomorrow. 💪", parse_mode="Markdown")
+        await update.message.reply_text(
+            "✅ *Already checked in today!* Come back tomorrow. 💪",
+            parse_mode="Markdown")
         conn.close()
         return
 
@@ -297,9 +306,9 @@ async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.error(f"Failed to send group notification: {e}")
+            logger.error(f"Group notification failed: {e}")
 
-# ================= MORNING REMINDER (8AM) =================
+# ================= MORNING REMINDER =================
 async def morning_reminder(context):
     logger.info("Running morning reminder...")
     conn = get_conn()
@@ -314,148 +323,137 @@ async def morning_reminder(context):
                 chat_id=user_id,
                 text=f"🌅 *Good Morning {first_name}!*\n\n"
                      f"A new day = a new chance to stay consistent! 💪\n\n"
-                     f"📚 Study hard today and don't forget to:\n"
-                     f"✅ Use /checkin after studying\n\n"
+                     f"📚 Study hard today and don't forget:\n"
+                     f"✅ Use /checkin after studying!\n\n"
                      f"Your partner is counting on you! 🔥",
                 parse_mode="Markdown"
             )
         except Exception as e:
             logger.error(f"Morning reminder failed for {user_id}: {e}")
 
-# ================= DAILY CHECK + GHOST DETECTION (12PM) =================
+# ================= DAILY CHECK + GHOST DETECTION =================
 async def daily_check(context):
-    logger.info("Running daily check and ghost detection...")
+    logger.info("Running daily check...")
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT user_id, first_name, last_checkin, 
-                 partner_id, reputation, streak 
-                 FROM users""")
+    c.execute("""SELECT user_id, first_name, last_checkin,
+                 partner_id, reputation, streak FROM users""")
     users = c.fetchall()
 
     for user_id, first_name, last_checkin, partner_id, reputation, streak in users:
         missed = days_missed(last_checkin)
 
-        # Day 1 missed — soft reminder
         if missed == 1:
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"⏰ *Hey {first_name}!*\n\n"
-                         f"You haven't checked in today yet!\n\n"
+                         f"You haven't checked in today!\n\n"
                          f"Don't break your streak of *{streak} days!* 🔥\n\n"
-                         f"Use /checkin now — it only takes 1 second! 💪",
+                         f"Use /checkin now! 💪",
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"Day 1 reminder failed for {user_id}: {e}")
 
-        # Day 2 missed — strong warning
         elif missed == 2:
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"⚠️ *{first_name}, you've missed 2 days!*\n\n"
-                         f"Your streak has been reset to 0 😔\n\n"
-                         f"But it's not too late! Come back now:\n"
-                         f"✅ Use /checkin to restart your journey\n\n"
-                         f"⚠️ *Warning:* Missing one more day will result in:\n"
+                         f"Your streak has reset to 0 😔\n\n"
+                         f"Come back now:\n"
+                         f"✅ Use /checkin to restart!\n\n"
+                         f"⚠️ *Warning:* Miss one more day and:\n"
                          f"• -15 reputation points\n"
                          f"• Partner reassignment\n\n"
-                         f"Your partner is waiting for you! 🙏",
+                         f"Your partner is waiting! 🙏",
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"Day 2 warning failed for {user_id}: {e}")
 
-        # Day 3 missed — ghost detected
         elif missed >= 3:
             new_rep = max(0, reputation - 15)
-
-            c.execute("""UPDATE users SET reputation=?, partner_id=NULL 
+            c.execute("""UPDATE users SET reputation=?, partner_id=NULL
                          WHERE user_id=?""", (new_rep, user_id))
 
-            # Notify ghost
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"👻 *{first_name}, you have been marked as inactive!*\n\n"
-                         f"You missed 3+ days of check-ins.\n\n"
-                         f"*Penalties applied:*\n"
-                         f"• Reputation: -{15} points\n"
-                         f"• Your partner has been reassigned\n\n"
-                         f"Want to start fresh? Use /start to find a new partner! 💪\n\n"
-                         f"We hope to see you back! 🙏",
+                    text=f"👻 *{first_name}, you are marked inactive!*\n\n"
+                         f"You missed 3+ days.\n\n"
+                         f"*Penalties:*\n"
+                         f"• Reputation: -15 points\n"
+                         f"• Partner reassigned\n\n"
+                         f"Use /start to find a new partner! 💪",
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.error(f"Ghost notification failed for {user_id}: {e}")
+                logger.error(f"Ghost msg failed for {user_id}: {e}")
 
-            # Handle abandoned partner
             if partner_id:
-                c.execute("UPDATE users SET partner_id=NULL WHERE user_id=?", (partner_id,))
+                c.execute("""UPDATE users SET partner_id=NULL
+                             WHERE user_id=?""", (partner_id,))
 
                 try:
                     await context.bot.send_message(
                         chat_id=partner_id,
-                        text=f"😔 *Your study partner has been inactive for 3+ days.*\n\n"
-                             f"They have been removed from your partnership.\n\n"
-                             f"🔍 *We are finding you a new partner!*\n\n"
-                             f"Use /start to get rematched immediately! 💪",
+                        text=f"😔 *Your partner has been inactive 3+ days.*\n\n"
+                             f"They have been removed.\n\n"
+                             f"🔍 Finding you a new partner!\n\n"
+                             f"Use /start to rematch now! 💪",
                         parse_mode="Markdown"
                     )
                 except Exception as e:
-                    logger.error(f"Partner notification failed for {partner_id}: {e}")
+                    logger.error(f"Partner msg failed for {partner_id}: {e}")
 
-                # Try auto rematch
                 c.execute("""SELECT wq.user_id FROM waiting_queue wq
                              JOIN users u ON wq.user_id = u.user_id
-                             WHERE wq.exam = (SELECT exam FROM users WHERE user_id=?)
-                             AND wq.study_time = (SELECT study_time FROM users WHERE user_id=?)
-                             LIMIT 1""",
-                          (partner_id, partner_id))
+                             WHERE wq.exam=(SELECT exam FROM users WHERE user_id=?)
+                             AND wq.study_time=(SELECT study_time FROM users WHERE user_id=?)
+                             LIMIT 1""", (partner_id, partner_id))
                 new_match = c.fetchone()
 
                 if new_match:
                     new_partner_id = new_match[0]
                     now = datetime.now(INDIA_TZ).isoformat()
-
-                    c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
+                    c.execute("""UPDATE users SET partner_id=?, matched_at=?
+                                 WHERE user_id=?""",
                               (new_partner_id, now, partner_id))
-                    c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
+                    c.execute("""UPDATE users SET partner_id=?, matched_at=?
+                                 WHERE user_id=?""",
                               (partner_id, now, new_partner_id))
-                    c.execute("DELETE FROM waiting_queue WHERE user_id=?", (new_partner_id,))
+                    c.execute("""DELETE FROM waiting_queue
+                                 WHERE user_id=?""", (new_partner_id,))
 
                     try:
                         await context.bot.send_message(
                             chat_id=partner_id,
-                            text=f"🎉 *Great news! We found you a new partner!*\n\n"
-                                 f"Use /partner to see their details.\n"
-                                 f"Use /checkin to start fresh! 💪",
+                            text="🎉 *New partner found!*\n\n"
+                                 "Use /partner to see details! 💪",
                             parse_mode="Markdown"
                         )
                         await context.bot.send_message(
                             chat_id=new_partner_id,
-                            text=f"🎉 *You have been matched with a new study partner!*\n\n"
-                                 f"Use /partner to see their details.\n"
-                                 f"Use /checkin to start! 💪",
+                            text="🎉 *You have a new study partner!*\n\n"
+                                 "Use /partner to see details! 💪",
                             parse_mode="Markdown"
                         )
                     except Exception as e:
-                        logger.error(f"Auto rematch notification failed: {e}")
+                        logger.error(f"Rematch msg failed: {e}")
 
-            # Notify admin
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_USER_ID,
                     text=f"👻 *GHOST DETECTED!*\n\n"
                          f"👤 *User:* {first_name} (ID: `{user_id}`)\n"
-                         f"📉 *Reputation:* -{15} points\n"
-                         f"🔄 *Partner reassigned automatically*\n\n"
-                         f"No action needed from you.",
+                         f"📉 *Reputation:* -15 points\n"
+                         f"🔄 *Partner reassigned*",
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.error(f"Admin ghost notification failed: {e}")
+                logger.error(f"Admin ghost msg failed: {e}")
 
     conn.commit()
     conn.close()
@@ -466,12 +464,15 @@ async def streak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT first_name, streak, reputation FROM users WHERE user_id=?", (user_id,))
+    c.execute("""SELECT first_name, streak, reputation
+                 FROM users WHERE user_id=?""", (user_id,))
     row = c.fetchone()
     conn.close()
 
     if not row:
-        await update.message.reply_text("❌ *Not registered!* Use /start first.", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *Not registered!* Use /start first.",
+            parse_mode="Markdown")
         return
 
     name, streak, reputation = row
@@ -503,12 +504,15 @@ async def partner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     row = c.fetchone()
 
     if not row or not row[0]:
-        await update.message.reply_text("⏳ *No partner yet!* Waiting for match...", parse_mode="Markdown")
+        await update.message.reply_text(
+            "⏳ *No partner yet!* Waiting for match...",
+            parse_mode="Markdown")
         conn.close()
         return
 
     partner_id = row[0]
-    c.execute("SELECT first_name, streak, reputation FROM users WHERE user_id=?", (partner_id,))
+    c.execute("""SELECT first_name, streak, reputation
+                 FROM users WHERE user_id=?""", (partner_id,))
     partner = c.fetchone()
     conn.close()
 
@@ -521,86 +525,71 @@ async def partner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💬 Motivate each other!",
             parse_mode="Markdown"
         )
-    else:
-        await update.message.reply_text("⚠️ *Partner not found* in database.", parse_mode="Markdown")
 
 # ================= RULES COMMAND =================
 async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rules_text = """
-📋 *PrepRoom Accountability Rules*
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *Daily Check-in*
-• Use `/checkin` every day to mark your study session
-• Check-in before midnight
-• Your partner gets notified when you check in
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-🔥 *Streaks*
-• +1 streak for each consecutive day
-• Miss a day? Streak resets to 0
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-⭐ *Reputation System*
-• Start at 40 reputation
-• +2 reputation for each check-in
-• -5 reputation for missing a day
-• Tiers: 🥉 Bronze → 🥈 Silver → 🥇 Gold → 💎 Diamond
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-👻 *Ghost Rules*
-• Day 1 missed = Reminder sent
-• Day 2 missed = Warning sent
-• Day 3 missed = -15 reputation + partner reassigned
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📊 *Commands*
-• `/checkin` - Mark today as studied
-• `/streak` - View your stats
-• `/partner` - See partner details
-• `/rules` - Show this again
-• `/report` - Report inactive partner
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-💪 Consistency beats perfection!
-*Your partner is counting on you!* 🔥
-"""
-    await update.message.reply_text(rules_text, parse_mode="Markdown")
+    await update.message.reply_text(
+        "📋 *PrepRoom Accountability Rules*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "✅ *Daily Check-in*\n"
+        "• Use /checkin every day\n"
+        "• Partner gets notified when you check in\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔥 *Streaks*\n"
+        "• +1 streak each consecutive day\n"
+        "• Miss a day = streak resets\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⭐ *Reputation*\n"
+        "• Start at 40 points\n"
+        "• +2 per check-in\n"
+        "• -5 per missed day\n"
+        "• Tiers: 🥉Bronze → 🥈Silver → 🥇Gold → 💎Diamond\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👻 *Ghost Rules*\n"
+        "• Day 1 missed = Reminder\n"
+        "• Day 2 missed = Warning\n"
+        "• Day 3 missed = -15 rep + partner reassigned\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 *Commands*\n"
+        "• /checkin — Mark today studied\n"
+        "• /streak — Your stats\n"
+        "• /partner — Partner details\n"
+        "• /rules — This message\n"
+        "• /report — Report inactive partner\n\n"
+        "💪 *Consistency beats perfection!*",
+        parse_mode="Markdown"
+    )
 
 # ================= REPORT COMMAND =================
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT partner_id, first_name FROM users WHERE user_id=?", (user_id,))
+    c.execute("""SELECT partner_id, first_name
+                 FROM users WHERE user_id=?""", (user_id,))
     row = c.fetchone()
     conn.close()
 
     if not row or not row[0]:
-        await update.message.reply_text("❌ *No partner to report!*", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *No partner to report!*",
+            parse_mode="Markdown")
         return
 
     partner_id, partner_name = row
 
     await update.message.reply_text(
         f"⚠️ *Report submitted!*\n\n"
-        f"Admin will review within 24 hours.\n\n"
-        f"Thank you for maintaining accountability! 💪",
+        f"Admin will review within 24 hours. 💪",
         parse_mode="Markdown"
     )
 
     await context.bot.send_message(
         chat_id=ADMIN_USER_ID,
         text=f"🚨 *INACTIVITY REPORT*\n\n"
-             f"📢 *Reported by:* User `{user_id}`\n"
-             f"👤 *Reported:* {partner_name} (ID: `{partner_id}`)\n\n"
-             f"📝 *Action:* Investigate and reassign if needed.",
+             f"📢 *By:* User `{user_id}`\n"
+             f"👤 *Reported:* {partner_name} (`{partner_id}`)\n\n"
+             f"📝 Investigate and reassign if needed.",
         parse_mode="Markdown"
     )
 
@@ -612,29 +601,34 @@ async def group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT match_id, user1_id, user2_id FROM pending_groups WHERE status='pending' LIMIT 1")
+    c.execute("""SELECT match_id, user1_id, user2_id
+                 FROM pending_groups WHERE status='pending' LIMIT 1""")
     match = c.fetchone()
 
     if not match:
-        await update.message.reply_text("ℹ️ *No pending matches.*", parse_mode="Markdown")
+        await update.message.reply_text(
+            "ℹ️ *No pending matches.*",
+            parse_mode="Markdown")
         conn.close()
         return
 
     match_id, u1, u2 = match
     group_id = update.effective_chat.id
 
-    c.execute("UPDATE users SET group_id=? WHERE user_id IN (?, ?)", (group_id, u1, u2))
-    c.execute("UPDATE pending_groups SET status='done' WHERE match_id=?", (match_id,))
+    c.execute("""UPDATE users SET group_id=?
+                 WHERE user_id IN (?, ?)""", (group_id, u1, u2))
+    c.execute("""UPDATE pending_groups SET status='done'
+                 WHERE match_id=?""", (match_id,))
     conn.commit()
     conn.close()
 
     await update.message.reply_text(
-        f"✅ *Group linked successfully!*\n\n"
-        f"Students can now use /checkin in this group!",
+        "✅ *Group linked successfully!*\n\n"
+        "Students can now use /checkin in this group!",
         parse_mode="Markdown"
     )
 
-# ================= ADMIN: PENDING MATCHES =================
+# ================= ADMIN: PENDING =================
 async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ *Admin only!*", parse_mode="Markdown")
@@ -642,12 +636,15 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT match_id, user1_id, user2_id, matched_at FROM pending_groups WHERE status='pending'")
+    c.execute("""SELECT match_id, user1_id, user2_id, matched_at
+                 FROM pending_groups WHERE status='pending'""")
     matches = c.fetchall()
     conn.close()
 
     if not matches:
-        await update.message.reply_text("✅ *No pending matches!*", parse_mode="Markdown")
+        await update.message.reply_text(
+            "✅ *No pending matches!*",
+            parse_mode="Markdown")
         return
 
     msg = "📋 *Pending Matches:*\n\n"
@@ -671,7 +668,6 @@ def main():
 
     if ADMIN_USER_ID == 0:
         print("❌ ERROR: ADMIN_USER_ID not set!")
-        print("Get your ID from @userinfobot on Telegram")
         return
 
     print(f"✅ Token loaded")
@@ -682,22 +678,16 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    # Scheduled jobs
     job_queue = app.job_queue
-
-    # Morning reminder — 8AM India time every day
     job_queue.run_daily(
         morning_reminder,
-        time=datetime.now(INDIA_TZ).replace(hour=8, minute=0, second=0).timetz()
+        time=dtime(hour=8, minute=0, second=0, tzinfo=INDIA_TZ)
     )
-
-    # Daily check + ghost detection — 12PM India time every day
     job_queue.run_daily(
         daily_check,
-        time=datetime.now(INDIA_TZ).replace(hour=12, minute=0, second=0).timetz()
+        time=dtime(hour=12, minute=0, second=0, tzinfo=INDIA_TZ)
     )
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("checkin", checkin))
     app.add_handler(CommandHandler("streak", streak_cmd))
