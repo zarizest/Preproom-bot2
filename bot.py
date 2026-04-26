@@ -9,12 +9,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # ================= CONFIGURATION =================
 TOKEN = os.getenv("TOKEN", "8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USE", "8456901459"))
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
 
 DB_NAME = "preproom.db"
 INDIA_TZ = pytz.timezone("Asia/Kolkata")
 
-# ================= LOGGING =================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -57,7 +56,13 @@ def setup_db():
         user1_id INTEGER,
         user2_id INTEGER,
         matched_at TEXT,
-        status TEXT DEFAULT "pending"
+        status TEXT DEFAULT 'pending'
+    )""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS temp_registration (
+        user_id INTEGER PRIMARY KEY,
+        exam TEXT,
+        study_time TEXT
     )""")
 
     conn.commit()
@@ -76,11 +81,9 @@ def days_missed(last_checkin):
     last = parse_date(last_checkin)
     return (today() - last).days
 
-# ================= START COMMAND =================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    logger.info(f"User {user.id} ({user.first_name}) started the bot")
-
     keyboard = [
         [InlineKeyboardButton("📚 TCS NQT", callback_data="exam_TCS NQT")],
         [InlineKeyboardButton("📚 Infosys", callback_data="exam_Infosys")],
@@ -88,10 +91,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📚 UPSC", callback_data="exam_UPSC")],
         [InlineKeyboardButton("📚 Banking", callback_data="exam_Banking")],
     ]
-
     await update.message.reply_text(
         "👋 *Welcome to PrepRoom!*\n\n"
-        "I'll match you with a study partner based on your exam.\n\n"
+        "I'll match you with a study partner.\n\n"
         "📚 *Which exam are you preparing for?*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
@@ -106,7 +108,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("exam_"):
         exam = data.replace("exam_", "")
-        context.user_data["exam"] = exam
+
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""INSERT OR REPLACE INTO temp_registration 
+                     (user_id, exam) VALUES (?, ?)""",
+                  (user.id, exam))
+        conn.commit()
+        conn.close()
 
         keyboard = [
             [InlineKeyboardButton("🌅 Morning (6AM-10AM)", callback_data="time_Morning")],
@@ -122,7 +131,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("time_"):
         study_time = data.replace("time_", "")
-        context.user_data["study_time"] = study_time
+
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""UPDATE temp_registration 
+                     SET study_time=? WHERE user_id=?""",
+                  (study_time, user.id))
+        conn.commit()
+        conn.close()
 
         keyboard = [
             [InlineKeyboardButton("🇬🇧 English", callback_data="lang_English")],
@@ -137,40 +153,65 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("lang_"):
         language = data.replace("lang_", "")
-        context.user_data["language"] = language
-
-        exam = context.user_data.get("exam")
-        study_time = context.user_data.get("study_time")
 
         conn = get_conn()
         c = conn.cursor()
 
+        c.execute("""SELECT exam, study_time FROM temp_registration 
+                     WHERE user_id=?""", (user.id,))
+        reg = c.fetchone()
+
+        if not reg or not reg[0] or not reg[1]:
+            await query.edit_message_text(
+                "❌ *Session expired!*\n\nPlease use /start again.",
+                parse_mode="Markdown"
+            )
+            conn.close()
+            return
+
+        exam, study_time = reg
+
         c.execute("""INSERT OR REPLACE INTO users
             (user_id, username, first_name, exam, study_time, language)
             VALUES (?, ?, ?, ?, ?, ?)""",
-            (user.id, user.username, user.first_name, exam, study_time, language))
+            (user.id, user.username, user.first_name,
+             exam, study_time, language))
+        conn.commit()
 
         c.execute("""SELECT user_id FROM waiting_queue
                      WHERE exam=? AND study_time=? AND user_id!=?""",
                   (exam, study_time, user.id))
-match = c.fetchone()
+        match = c.fetchone()
 
-if match:
-    partner_id = match[0]
-    c.execute("SELECT first_name FROM users WHERE user_id=?", (partner_id,))
-    name_row = c.fetchone()
-    partner_name = name_row[0] if name_row else "Study Partner"
+        if match:
+            partner_id = match[0]
+            c.execute("""SELECT first_name FROM users 
+                         WHERE user_id=?""", (partner_id,))
+            name_row = c.fetchone()
+            partner_name = name_row[0] if name_row else "Study Partner"
+
             now = datetime.now(INDIA_TZ).isoformat()
-
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
-                      (partner_id, now, user.id))
-            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?",
-                      (user.id, now, partner_id))
-            c.execute("DELETE FROM waiting_queue WHERE user_id=?", (partner_id,))
-            c.execute("""INSERT INTO pending_groups (user1_id, user2_id, matched_at)
+            c.execute("""UPDATE users SET partner_id=?, matched_at=? 
+                         WHERE user_id=?""", (partner_id, now, user.id))
+            c.execute("""UPDATE users SET partner_id=?, matched_at=? 
+                         WHERE user_id=?""", (user.id, now, partner_id))
+            c.execute("""DELETE FROM waiting_queue 
+                         WHERE user_id=?""", (partner_id,))
+            c.execute("""INSERT INTO pending_groups 
+                         (user1_id, user2_id, matched_at)
                          VALUES (?, ?, ?)""", (user.id, partner_id, now))
+            c.execute("""DELETE FROM temp_registration 
+                         WHERE user_id=?""", (user.id,))
             conn.commit()
             conn.close()
+
+            await query.edit_message_text(
+                f"🎉 *Registration complete!*\n\n"
+                f"✅ Matched with *{partner_name}*\n\n"
+                f"Admin will create your study group soon!\n\n"
+                f"Use /rules to learn how PrepRoom works! 📖",
+                parse_mode="Markdown"
+            )
 
             await context.bot.send_message(
                 chat_id=user.id,
@@ -212,20 +253,14 @@ if match:
                 parse_mode="Markdown"
             )
 
-            await query.edit_message_text(
-                f"🎉 *Registration complete!*\n\n"
-                f"✅ Matched with *{partner_name}*\n\n"
-                f"Admin will create your study group soon!\n\n"
-                f"Use /rules to learn how PrepRoom works! 📖",
-                parse_mode="Markdown"
-            )
-
         else:
-            c.execute("""INSERT INTO waiting_queue
+            c.execute("""INSERT OR REPLACE INTO waiting_queue
                 (user_id, exam, study_time, language, joined_at)
                 VALUES (?, ?, ?, ?, ?)""",
                 (user.id, exam, study_time, language,
                  datetime.now(INDIA_TZ).isoformat()))
+            c.execute("""DELETE FROM temp_registration 
+                         WHERE user_id=?""", (user.id,))
             conn.commit()
             conn.close()
 
@@ -247,7 +282,7 @@ async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT streak, last_checkin, partner_id, 
+    c.execute("""SELECT streak, last_checkin, partner_id,
                  group_id, reputation FROM users WHERE user_id=?""",
               (user_id,))
     row = c.fetchone()
@@ -364,7 +399,6 @@ async def daily_check(context):
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"⚠️ *{first_name}, you've missed 2 days!*\n\n"
-                         f"Your streak has reset to 0 😔\n\n"
                          f"Come back now:\n"
                          f"✅ Use /checkin to restart!\n\n"
                          f"⚠️ *Warning:* Miss one more day and:\n"
@@ -412,7 +446,6 @@ async def daily_check(context):
                     logger.error(f"Partner msg failed for {partner_id}: {e}")
 
                 c.execute("""SELECT wq.user_id FROM waiting_queue wq
-                             JOIN users u ON wq.user_id = u.user_id
                              WHERE wq.exam=(SELECT exam FROM users WHERE user_id=?)
                              AND wq.study_time=(SELECT study_time FROM users WHERE user_id=?)
                              LIMIT 1""", (partner_id, partner_id))
@@ -462,7 +495,7 @@ async def daily_check(context):
     conn.close()
     logger.info("Daily check complete!")
 
-# ================= STREAK COMMAND =================
+# ================= STREAK =================
 async def streak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
@@ -498,7 +531,7 @@ async def streak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ================= PARTNER COMMAND =================
+# ================= PARTNER =================
 async def partner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
@@ -529,7 +562,7 @@ async def partner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-# ================= RULES COMMAND =================
+# ================= RULES =================
 async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📋 *PrepRoom Accountability Rules*\n\n"
@@ -563,7 +596,7 @@ async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ================= REPORT COMMAND =================
+# ================= REPORT =================
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
@@ -599,7 +632,9 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= ADMIN: GROUP READY =================
 async def group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ *Admin only!*", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *Admin only!*",
+            parse_mode="Markdown")
         return
 
     conn = get_conn()
@@ -634,7 +669,9 @@ async def group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= ADMIN: PENDING =================
 async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ *Admin only!*", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ *Admin only!*",
+            parse_mode="Markdown")
         return
 
     conn = get_conn()
