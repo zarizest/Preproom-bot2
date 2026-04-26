@@ -1,19 +1,18 @@
 import os
 import sqlite3
 import logging
-from datetime import datetime, timedelta, time as dtime
-import pytz
+from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # ================= CONFIGURATION =================
-TOKEN = os.getenv("TOKEN", "8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
+TOKEN = os.getenv("TOKEN")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 DB_NAME = "preproom.db"
-INDIA_TZ = pytz.timezone("Asia/Kolkata")
 
+# ================= LOGGING =================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -27,7 +26,7 @@ def get_conn():
 def setup_db():
     conn = get_conn()
     c = conn.cursor()
-
+    
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -42,7 +41,7 @@ def setup_db():
         group_id INTEGER,
         matched_at TEXT
     )""")
-
+    
     c.execute("""CREATE TABLE IF NOT EXISTS waiting_queue (
         user_id INTEGER PRIMARY KEY,
         exam TEXT,
@@ -50,220 +49,377 @@ def setup_db():
         language TEXT,
         joined_at TEXT
     )""")
-
+    
     c.execute("""CREATE TABLE IF NOT EXISTS pending_groups (
         match_id INTEGER PRIMARY KEY AUTOINCREMENT,
         user1_id INTEGER,
         user2_id INTEGER,
         matched_at TEXT,
-        status TEXT DEFAULT 'pending'
+        status TEXT DEFAULT "pending"
     )""")
-
-    c.execute("""CREATE TABLE IF NOT EXISTS temp_registration (
-        user_id INTEGER PRIMARY KEY,
-        exam TEXT,
-        study_time TEXT
-    )""")
-
+    
     conn.commit()
     conn.close()
     logger.info("✅ Database initialized")
 
 def today():
-    return datetime.now(INDIA_TZ).date()
+    return datetime.utcnow().date()
 
 def parse_date(d):
     return datetime.strptime(d, "%Y-%m-%d").date() if d else None
 
-def days_missed(last_checkin):
-    if not last_checkin:
-        return 999
-    last = parse_date(last_checkin)
-    return (today() - last).days
+def register_user(user_id, username, onboarding_data):
+    """Save user to database"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO users 
+        (user_id, username, first_name, exam, study_time, language)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (user_id, username, onboarding_data.get('first_name', 'User'), 
+         onboarding_data.get('exam', 'Unknown'), 
+         onboarding_data.get('time', 'Unknown'), 
+         onboarding_data.get('language', 'English')))
+    conn.commit()
+    conn.close()
 
-# ================= START =================
+# ================= START COMMAND =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Welcome message with category selection first."""
     user = update.effective_user
+    
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE user_id = ?', (user.id,))
+    existing = c.fetchone()
+    conn.close()
+    
+    if existing:
+        await show_dashboard(update, context)
+        return
+    
+    context.user_data['onboarding'] = {'first_name': user.first_name}
+    
     keyboard = [
-        [InlineKeyboardButton("📚 TCS NQT", callback_data="exam_TCS NQT")],
-        [InlineKeyboardButton("📚 Infosys", callback_data="exam_Infosys")],
-        [InlineKeyboardButton("📚 SSC CGL", callback_data="exam_SSC CGL")],
-        [InlineKeyboardButton("📚 UPSC", callback_data="exam_UPSC")],
-        [InlineKeyboardButton("📚 Banking", callback_data="exam_Banking")],
+        [InlineKeyboardButton("🏢 Campus Placements (TCS, Infosys, etc.)", callback_data="cat_placements")],
+        [InlineKeyboardButton("📋 Government Exams (SSC, Banking, UPSC)", callback_data="cat_government")],
+        [InlineKeyboardButton("🏥 Medical Entrance (NEET)", callback_data="exam_NEET")],
+        [InlineKeyboardButton("🔬 Engineering Entrance (JEE)", callback_data="exam_JEE")],
+        [InlineKeyboardButton("🎓 MBA/GATE", callback_data="cat_mba_gate")],
+        [InlineKeyboardButton("📚 Semester / Other", callback_data="cat_semester")],
     ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "👋 *Welcome to PrepRoom!*\n\n"
-        "I'll match you with a study partner.\n\n"
-        "📚 *Which exam are you preparing for?*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        f"👋 Welcome to PrepRoom, {user.first_name}!\n\n"
+        "🎯 *I'll match you with a study partner.*\n\n"
+        "📋 *Step 1/3: What are you preparing for?*",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user dashboard"""
+    await update.message.reply_text(
+        "📊 *Your Dashboard*\n\n"
+        "Use /checkin to mark today's study\n"
+        "Use /streak to see your stats\n"
+        "Use /partner to see your partner",
+        parse_mode='Markdown'
     )
 
 # ================= BUTTON HANDLER =================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all button clicks."""
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    user_name = query.from_user.first_name
     data = query.data
-    user = query.from_user
-
-    if data.startswith("exam_"):
-        exam = data.replace("exam_", "")
-
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute("""INSERT OR REPLACE INTO temp_registration 
-                     (user_id, exam) VALUES (?, ?)""",
-                  (user.id, exam))
-        conn.commit()
-        conn.close()
-
+    
+    if 'onboarding' not in context.user_data:
+        context.user_data['onboarding'] = {}
+    
+    # --- CATEGORY HANDLERS ---
+    
+    if data == 'cat_placements':
         keyboard = [
-            [InlineKeyboardButton("🌅 Morning (6AM-10AM)", callback_data="time_Morning")],
-            [InlineKeyboardButton("☀️ Afternoon (12PM-4PM)", callback_data="time_Afternoon")],
-            [InlineKeyboardButton("🌙 Evening (6PM-10PM)", callback_data="time_Evening")],
-            [InlineKeyboardButton("🌃 Night (10PM-2AM)", callback_data="time_Night")],
+            [InlineKeyboardButton("TCS NQT", callback_data="exam_TCS NQT")],
+            [InlineKeyboardButton("Infosys", callback_data="exam_Infosys")],
+            [InlineKeyboardButton("Wipro Elite", callback_data="exam_Wipro")],
+            [InlineKeyboardButton("Capgemini", callback_data="exam_Capgemini")],
+            [InlineKeyboardButton("Accenture", callback_data="exam_Accenture")],
+            [InlineKeyboardButton("Cognizant", callback_data="exam_Cognizant")],
+            [InlineKeyboardButton("Other Placement", callback_data="exam_Other")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")],
         ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"✅ *Exam:* {exam}\n\n⏰ *When do you usually study?*",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            "🏢 *Campus Placements*\nSelect your target company:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-
-    elif data.startswith("time_"):
-        study_time = data.replace("time_", "")
-
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute("""UPDATE temp_registration 
-                     SET study_time=? WHERE user_id=?""",
-                  (study_time, user.id))
-        conn.commit()
-        conn.close()
-
+        return
+    
+    elif data == 'cat_government':
         keyboard = [
-            [InlineKeyboardButton("🇬🇧 English", callback_data="lang_English")],
-            [InlineKeyboardButton("🇮🇳 Hindi", callback_data="lang_Hindi")],
-            [InlineKeyboardButton("🇮🇳 Marathi", callback_data="lang_Marathi")],
+            [InlineKeyboardButton("SSC CGL", callback_data="exam_SSC CGL")],
+            [InlineKeyboardButton("SSC CHSL", callback_data="exam_SSC CHSL")],
+            [InlineKeyboardButton("Banking (IBPS/SBI)", callback_data="exam_Banking")],
+            [InlineKeyboardButton("RRB NTPC", callback_data="exam_RRB")],
+            [InlineKeyboardButton("UPSC", callback_data="exam_UPSC")],
+            [InlineKeyboardButton("State PSC", callback_data="exam_State PSC")],
+            [InlineKeyboardButton("Other Govt Exam", callback_data="exam_Other")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")],
         ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"✅ *Study time:* {study_time}\n\n🗣 *Preferred language?*",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            "📋 *Government Exams*\nSelect your target exam:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-
-    elif data.startswith("lang_"):
-        language = data.replace("lang_", "")
-
+        return
+    
+    elif data == 'cat_mba_gate':
+        keyboard = [
+            [InlineKeyboardButton("CAT / MBA Entrance", callback_data="exam_CAT")],
+            [InlineKeyboardButton("GATE", callback_data="exam_GATE")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🎓 *MBA / GATE*\nSelect your exam:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
+    
+    elif data == 'cat_semester':
+        keyboard = [
+            [InlineKeyboardButton("Semester Exams", callback_data="exam_Semester")],
+            [InlineKeyboardButton("Other", callback_data="exam_Other")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📚 *Semester / Other*\nWhat are you studying for?",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
+    
+    elif data == 'back_to_start':
+        await start(update, context)
+        return
+    
+    # --- EXAM SELECTED (Direct exams like NEET, JEE, etc.) ---
+    
+    elif data.startswith('exam_') and not data.startswith('exam_TCS') and not data.startswith('exam_Infosys'):
+        exam = data.replace('exam_', '')
+        exam_display = exam.replace('_', ' ')
+        context.user_data['onboarding']['exam'] = exam_display
+        
+        keyboard = [
+            [InlineKeyboardButton("🌅 Early Morning (5-8 AM)", callback_data="time_5_8")],
+            [InlineKeyboardButton("☀️ Morning (8 AM-12 PM)", callback_data="time_8_12")],
+            [InlineKeyboardButton("🌤️ Afternoon (12-4 PM)", callback_data="time_12_16")],
+            [InlineKeyboardButton("🌆 Evening (4-8 PM)", callback_data="time_16_20")],
+            [InlineKeyboardButton("🌙 Night (8 PM-12 AM)", callback_data="time_20_24")],
+            [InlineKeyboardButton("🦉 Late Night (12-3 AM)", callback_data="time_0_3")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Exam: *{exam_display}*\n\n"
+            "⏰ *Step 2/3: What's your preferred study time?*",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
+    
+    # --- COMPANY EXAM SELECTED ---
+    
+    elif data.startswith('exam_'):
+        exam = data.replace('exam_', '')
+        exam_display = exam.replace('_', ' ')
+        context.user_data['onboarding']['exam'] = exam_display
+        
+        keyboard = [
+            [InlineKeyboardButton("🌅 Early Morning (5-8 AM)", callback_data="time_5_8")],
+            [InlineKeyboardButton("☀️ Morning (8 AM-12 PM)", callback_data="time_8_12")],
+            [InlineKeyboardButton("🌤️ Afternoon (12-4 PM)", callback_data="time_12_16")],
+            [InlineKeyboardButton("🌆 Evening (4-8 PM)", callback_data="time_16_20")],
+            [InlineKeyboardButton("🌙 Night (8 PM-12 AM)", callback_data="time_20_24")],
+            [InlineKeyboardButton("🦉 Late Night (12-3 AM)", callback_data="time_0_3")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Exam: *{exam_display}*\n\n"
+            "⏰ *Step 2/3: What's your preferred study time?*",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    # --- TIME SELECTED ---
+    
+    elif data.startswith('time_'):
+        time_slot = data.replace('time_', '')
+        time_display = {
+            '5_8': 'Early Morning (5-8 AM)',
+            '8_12': 'Morning (8 AM-12 PM)',
+            '12_16': 'Afternoon (12-4 PM)',
+            '16_20': 'Evening (4-8 PM)',
+            '20_24': 'Night (8 PM-12 AM)',
+            '0_3': 'Late Night (12-3 AM)'
+        }.get(time_slot, time_slot)
+        
+        context.user_data['onboarding']['time'] = time_display
+        context.user_data['onboarding']['time_slot'] = time_slot
+        
+        keyboard = [
+            [InlineKeyboardButton("English", callback_data="lang_English")],
+            [InlineKeyboardButton("हिंदी (Hindi)", callback_data="lang_Hindi")],
+            [InlineKeyboardButton("मराठी (Marathi)", callback_data="lang_Marathi")],
+            [InlineKeyboardButton("தமிழ் (Tamil)", callback_data="lang_Tamil")],
+            [InlineKeyboardButton("తెలుగు (Telugu)", callback_data="lang_Telugu")],
+            [InlineKeyboardButton("বাংলা (Bengali)", callback_data="lang_Bengali")],
+            [InlineKeyboardButton("ಕನ್ನಡ (Kannada)", callback_data="lang_Kannada")],
+            [InlineKeyboardButton("മലയാളം (Malayalam)", callback_data="lang_Malayalam")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Exam: *{context.user_data['onboarding']['exam']}*\n"
+            f"✅ Time: *{time_display}*\n\n"
+            "🗣️ *Step 3/3: Preferred language for partner chat?*",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    # --- LANGUAGE SELECTED - COMPLETE REGISTRATION ---
+    
+    elif data.startswith('lang_'):
+        language = data.replace('lang_', '')
+        language = language.split(' ')[0]  # Remove parentheses part
+        context.user_data['onboarding']['language'] = language
+        
+        exam = context.user_data['onboarding'].get('exam', 'Unknown')
+        study_time = context.user_data['onboarding'].get('time', 'Unknown')
+        
+        # Save user to database
         conn = get_conn()
         c = conn.cursor()
-
-        c.execute("""SELECT exam, study_time FROM temp_registration 
-                     WHERE user_id=?""", (user.id,))
-        reg = c.fetchone()
-
-        if not reg or not reg[0] or not reg[1]:
-            await query.edit_message_text(
-                "❌ *Session expired!*\n\nPlease use /start again.",
-                parse_mode="Markdown"
-            )
-            conn.close()
-            return
-
-        exam, study_time = reg
-
-        c.execute("""INSERT OR REPLACE INTO users
+        c.execute("""INSERT OR REPLACE INTO users 
             (user_id, username, first_name, exam, study_time, language)
             VALUES (?, ?, ?, ?, ?, ?)""",
-            (user.id, user.username, user.first_name,
-             exam, study_time, language))
+            (user_id, query.from_user.username, user_name, exam, study_time, language))
         conn.commit()
-
-        c.execute("""SELECT user_id FROM waiting_queue
+        
+        # Check for match in waiting queue
+        c.execute("""SELECT user_id, first_name, username FROM waiting_queue 
                      WHERE exam=? AND study_time=? AND user_id!=?""",
-                  (exam, study_time, user.id))
+                  (exam, study_time, user_id))
         match = c.fetchone()
-
+        
         if match:
-            partner_id = match[0]
-            c.execute("""SELECT first_name FROM users 
-                         WHERE user_id=?""", (partner_id,))
-            name_row = c.fetchone()
-            partner_name = name_row[0] if name_row else "Study Partner"
-
-            now = datetime.now(INDIA_TZ).isoformat()
-            c.execute("""UPDATE users SET partner_id=?, matched_at=? 
-                         WHERE user_id=?""", (partner_id, now, user.id))
-            c.execute("""UPDATE users SET partner_id=?, matched_at=? 
-                         WHERE user_id=?""", (user.id, now, partner_id))
-            c.execute("""DELETE FROM waiting_queue 
-                         WHERE user_id=?""", (partner_id,))
-            c.execute("""INSERT INTO pending_groups 
-                         (user1_id, user2_id, matched_at)
-                         VALUES (?, ?, ?)""", (user.id, partner_id, now))
-            c.execute("""DELETE FROM temp_registration 
-                         WHERE user_id=?""", (user.id,))
+            partner_id, partner_name, partner_username = match
+            now = datetime.utcnow().isoformat()
+            
+            # Link partners
+            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (partner_id, now, user_id))
+            c.execute("UPDATE users SET partner_id=?, matched_at=? WHERE user_id=?", (user_id, now, partner_id))
+            c.execute("DELETE FROM waiting_queue WHERE user_id=?", (partner_id,))
+            c.execute("""INSERT INTO pending_groups (user1_id, user2_id, matched_at)
+                         VALUES (?, ?, ?)""", (user_id, partner_id, now))
             conn.commit()
             conn.close()
+            
+            # ========== ADMIN NOTIFICATION ==========
+            admin_message = f"""
+🎯 *NEW MATCH ALERT!*
 
-            await query.edit_message_text(
-                f"🎉 *Registration complete!*\n\n"
-                f"✅ Matched with *{partner_name}*\n\n"
-                f"Admin will create your study group soon!\n\n"
-                f"Use /rules to learn how PrepRoom works! 📖",
-                parse_mode="Markdown"
-            )
+━━━━━━━━━━━━━━━━━━━━━━
+👤 *STUDENT 1*
+• Name: {user_name}
+• Username: @{query.from_user.username if query.from_user.username else 'No username'}
+• User ID: `{user_id}`
 
+👤 *STUDENT 2*
+• Name: {partner_name}
+• Username: @{partner_username if partner_username else 'No username'}
+• User ID: `{partner_id}`
+
+━━━━━━━━━━━━━━━━━━━━━━
+📚 *MATCH DETAILS*
+• Exam: {exam}
+• Study Time: {study_time}
+• Language: {language}
+
+━━━━━━━━━━━━━━━━━━━━━━
+✅ *ACTION REQUIRED:*
+
+1️⃣ Create a private Telegram group
+2️⃣ Name it: "PrepRoom - {user_name} & {partner_name}"
+3️⃣ Add BOTH students to the group
+4️⃣ Add @{context.bot.username} as admin
+5️⃣ Send /group_ready in the group
+
+━━━━━━━━━━━━━━━━━━━━━━
+⏰ *Match Time:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
+"""
+            
+            # Send admin notification
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_USER_ID,
+                    text=admin_message,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"✅ Admin notification sent for match: {user_id} & {partner_id}")
+                print(f"✅ Admin notification sent to {ADMIN_USER_ID}")
+            except Exception as e:
+                logger.error(f"❌ Failed to send admin notification: {e}")
+                print(f"❌ ERROR sending to admin {ADMIN_USER_ID}: {e}")
+            
+            # Notify users
             await context.bot.send_message(
-                chat_id=user.id,
+                chat_id=user_id,
                 text=f"🎉 *You've been matched with {partner_name}!*\n\n"
                      f"📢 Admin will create your private study group within 24 hours.\n\n"
                      f"⏳ *While you wait:*\n"
                      f"• Use /checkin daily\n"
                      f"• Use /streak to track progress\n"
-                     f"• Use /partner to see partner details\n"
-                     f"• Use /rules to learn the system",
+                     f"• Use /partner to see partner details",
                 parse_mode="Markdown"
             )
-
+            
             await context.bot.send_message(
                 chat_id=partner_id,
-                text=f"🎉 *You've been matched with {user.first_name}!*\n\n"
+                text=f"🎉 *You've been matched with {user_name}!*\n\n"
                      f"📢 Admin will create your private study group within 24 hours.\n\n"
                      f"⏳ *While you wait:*\n"
                      f"• Use /checkin daily\n"
                      f"• Use /streak to track progress\n"
-                     f"• Use /partner to see partner details\n"
-                     f"• Use /rules to learn the system",
+                     f"• Use /partner to see partner details",
                 parse_mode="Markdown"
             )
-
-            await context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=f"🎯 *NEW MATCH!*\n\n"
-                     f"👤 *Student 1:* {user.first_name} (ID: `{user.id}`)\n"
-                     f"👤 *Student 2:* {partner_name} (ID: `{partner_id}`)\n"
-                     f"📚 *Exam:* {exam}\n"
-                     f"⏰ *Time:* {study_time}\n"
-                     f"🗣 *Language:* {language}\n\n"
-                     f"✅ *Action Required:*\n"
-                     f"1. Create a private Telegram group\n"
-                     f"2. Add BOTH students\n"
-                     f"3. Add @{context.bot.username} as admin\n"
-                     f"4. Type /group_ready in that group",
+            
+            await query.edit_message_text(
+                f"🎉 *Registration complete!*\n\n"
+                f"✅ Matched with *{partner_name}*\n\n"
+                f"Admin will create your study group soon!",
                 parse_mode="Markdown"
             )
-
+            
         else:
-            c.execute("""INSERT OR REPLACE INTO waiting_queue
+            # Add to waiting queue
+            c.execute("""INSERT INTO waiting_queue 
                 (user_id, exam, study_time, language, joined_at)
                 VALUES (?, ?, ?, ?, ?)""",
-                (user.id, exam, study_time, language,
-                 datetime.now(INDIA_TZ).isoformat()))
-            c.execute("""DELETE FROM temp_registration 
-                         WHERE user_id=?""", (user.id,))
+                (user_id, exam, study_time, language, datetime.utcnow().isoformat()))
             conn.commit()
             conn.close()
-
+            
             await query.edit_message_text(
                 f"✅ *Registration complete!*\n\n"
                 f"📚 *Exam:* {exam}\n"
@@ -275,244 +431,83 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
-# ================= CHECKIN =================
+# ================= CHECKIN COMMAND =================
 async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     today_date = today()
-
+    
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT streak, last_checkin, partner_id,
-                 group_id, reputation FROM users WHERE user_id=?""",
-              (user_id,))
+    c.execute("SELECT streak, last_checkin, partner_id, group_id, reputation FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
-
+    
     if not row:
-        await update.message.reply_text(
-            "❌ *Not registered!* Use /start first.",
-            parse_mode="Markdown")
+        await update.message.reply_text("❌ *Not registered!* Use /start first.", parse_mode="Markdown")
         conn.close()
         return
-
+    
     streak, last_checkin, partner_id, group_id, reputation = row
     last = parse_date(last_checkin)
-
+    
     if last == today_date:
-        await update.message.reply_text(
-            "✅ *Already checked in today!* Come back tomorrow. 💪",
-            parse_mode="Markdown")
+        await update.message.reply_text("✅ *Already checked in today!* Come back tomorrow.", parse_mode="Markdown")
         conn.close()
         return
-
+    
     if last == today_date - timedelta(days=1):
         streak += 1
         reputation += 2
-        message = f"🔥 *Streak:* {streak} days\n⭐ *Reputation:* +2 points"
+        message = f"🔥 *Streak:* {streak} days (+1)\n⭐ *Reputation:* +2"
     else:
         streak = 1
         reputation -= 5
-        message = f"🔄 *Streak reset!* New streak: 1 day\n⚠️ *Reputation:* -5 points"
-
+        message = f"🔄 *Streak reset!* New streak: 1 day\n⚠️ *Reputation:* -5"
+    
     reputation = max(0, min(100, reputation))
-
-    c.execute("""UPDATE users SET streak=?, last_checkin=?, reputation=?
+    
+    c.execute("""UPDATE users SET streak=?, last_checkin=?, reputation=? 
                  WHERE user_id=?""",
               (streak, today_date.strftime("%Y-%m-%d"), reputation, user_id))
     conn.commit()
     conn.close()
-
+    
     await update.message.reply_text(
-        f"✅ *Check-in recorded!*\n\n{message}\n\n"
-        f"📊 *Total Reputation:* {reputation}/100",
+        f"✅ *Check-in recorded!*\n\n{message}\n\n📊 *Current:* {reputation}/100 reputation",
         parse_mode="Markdown"
     )
-
+    
     if partner_id:
         await context.bot.send_message(
             chat_id=partner_id,
-            text=f"👀 *{update.effective_user.first_name} just checked in!*\n\n"
-                 f"Don't fall behind — use /checkin now! 💪",
+            text=f"👀 *{update.effective_user.first_name} just checked in!*\n\nDon't fall behind - use /checkin",
             parse_mode="Markdown"
         )
-
+    
     if group_id:
         try:
             await context.bot.send_message(
                 chat_id=group_id,
-                text=f"✅ *{update.effective_user.first_name}* checked in!\n"
-                     f"🔥 Current streak: *{streak}* days",
+                text=f"✅ *{update.effective_user.first_name}* checked in!\n🔥 Current streak: *{streak}* days",
                 parse_mode="Markdown"
             )
-        except Exception as e:
-            logger.error(f"Group notification failed: {e}")
+        except:
+            pass
 
-# ================= MORNING REMINDER =================
-async def morning_reminder(context):
-    logger.info("Running morning reminder...")
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT user_id, first_name FROM users")
-    users = c.fetchall()
-    conn.close()
-
-    for user_id, first_name in users:
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"🌅 *Good Morning {first_name}!*\n\n"
-                     f"A new day = a new chance to stay consistent! 💪\n\n"
-                     f"📚 Study hard today and don't forget:\n"
-                     f"✅ Use /checkin after studying!\n\n"
-                     f"Your partner is counting on you! 🔥",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Morning reminder failed for {user_id}: {e}")
-
-# ================= DAILY CHECK + GHOST DETECTION =================
-async def daily_check(context):
-    logger.info("Running daily check...")
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""SELECT user_id, first_name, last_checkin,
-                 partner_id, reputation, streak FROM users""")
-    users = c.fetchall()
-
-    for user_id, first_name, last_checkin, partner_id, reputation, streak in users:
-        missed = days_missed(last_checkin)
-
-        if missed == 1:
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"⏰ *Hey {first_name}!*\n\n"
-                         f"You haven't checked in today!\n\n"
-                         f"Don't break your streak of *{streak} days!* 🔥\n\n"
-                         f"Use /checkin now! 💪",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Day 1 reminder failed for {user_id}: {e}")
-
-        elif missed == 2:
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"⚠️ *{first_name}, you've missed 2 days!*\n\n"
-                         f"Come back now:\n"
-                         f"✅ Use /checkin to restart!\n\n"
-                         f"⚠️ *Warning:* Miss one more day and:\n"
-                         f"• -15 reputation points\n"
-                         f"• Partner reassignment\n\n"
-                         f"Your partner is waiting! 🙏",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Day 2 warning failed for {user_id}: {e}")
-
-        elif missed >= 3:
-            new_rep = max(0, reputation - 15)
-            c.execute("""UPDATE users SET reputation=?, partner_id=NULL
-                         WHERE user_id=?""", (new_rep, user_id))
-
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"👻 *{first_name}, you are marked inactive!*\n\n"
-                         f"You missed 3+ days.\n\n"
-                         f"*Penalties:*\n"
-                         f"• Reputation: -15 points\n"
-                         f"• Partner reassigned\n\n"
-                         f"Use /start to find a new partner! 💪",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Ghost msg failed for {user_id}: {e}")
-
-            if partner_id:
-                c.execute("""UPDATE users SET partner_id=NULL
-                             WHERE user_id=?""", (partner_id,))
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=partner_id,
-                        text=f"😔 *Your partner has been inactive 3+ days.*\n\n"
-                             f"They have been removed.\n\n"
-                             f"🔍 Finding you a new partner!\n\n"
-                             f"Use /start to rematch now! 💪",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.error(f"Partner msg failed for {partner_id}: {e}")
-
-                c.execute("""SELECT wq.user_id FROM waiting_queue wq
-                             WHERE wq.exam=(SELECT exam FROM users WHERE user_id=?)
-                             AND wq.study_time=(SELECT study_time FROM users WHERE user_id=?)
-                             LIMIT 1""", (partner_id, partner_id))
-                new_match = c.fetchone()
-
-                if new_match:
-                    new_partner_id = new_match[0]
-                    now = datetime.now(INDIA_TZ).isoformat()
-                    c.execute("""UPDATE users SET partner_id=?, matched_at=?
-                                 WHERE user_id=?""",
-                              (new_partner_id, now, partner_id))
-                    c.execute("""UPDATE users SET partner_id=?, matched_at=?
-                                 WHERE user_id=?""",
-                              (partner_id, now, new_partner_id))
-                    c.execute("""DELETE FROM waiting_queue
-                                 WHERE user_id=?""", (new_partner_id,))
-
-                    try:
-                        await context.bot.send_message(
-                            chat_id=partner_id,
-                            text="🎉 *New partner found!*\n\n"
-                                 "Use /partner to see details! 💪",
-                            parse_mode="Markdown"
-                        )
-                        await context.bot.send_message(
-                            chat_id=new_partner_id,
-                            text="🎉 *You have a new study partner!*\n\n"
-                                 "Use /partner to see details! 💪",
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.error(f"Rematch msg failed: {e}")
-
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_USER_ID,
-                    text=f"👻 *GHOST DETECTED!*\n\n"
-                         f"👤 *User:* {first_name} (ID: `{user_id}`)\n"
-                         f"📉 *Reputation:* -15 points\n"
-                         f"🔄 *Partner reassigned*",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Admin ghost msg failed: {e}")
-
-    conn.commit()
-    conn.close()
-    logger.info("Daily check complete!")
-
-# ================= STREAK =================
+# ================= STREAK COMMAND =================
 async def streak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT first_name, streak, reputation
-                 FROM users WHERE user_id=?""", (user_id,))
+    c.execute("SELECT first_name, streak, reputation FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     conn.close()
-
+    
     if not row:
-        await update.message.reply_text(
-            "❌ *Not registered!* Use /start first.",
-            parse_mode="Markdown")
+        await update.message.reply_text("❌ *Not registered!* Use /start first.", parse_mode="Markdown")
         return
-
+    
     name, streak, reputation = row
-
+    
     if reputation >= 90:
         tier = "💎 Diamond"
     elif reputation >= 75:
@@ -521,213 +516,327 @@ async def streak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = "🥈 Silver"
     else:
         tier = "🥉 Bronze"
-
+    
     await update.message.reply_text(
         f"📊 *{name}'s Stats*\n\n"
         f"🔥 *Streak:* {streak} days\n"
         f"⭐ *Reputation:* {reputation}/100\n"
-        f"🏆 *Tier:* {tier}\n\n"
-        f"💪 Keep studying every day!",
+        f"🏆 *Tier:* {tier}",
         parse_mode="Markdown"
     )
 
-# ================= PARTNER =================
+# ================= PARTNER COMMAND =================
 async def partner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT partner_id FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
-
+    
     if not row or not row[0]:
-        await update.message.reply_text(
-            "⏳ *No partner yet!* Waiting for match...",
-            parse_mode="Markdown")
+        await update.message.reply_text("⏳ *No partner yet!* Waiting for match...", parse_mode="Markdown")
         conn.close()
         return
-
+    
     partner_id = row[0]
-    c.execute("""SELECT first_name, streak, reputation
-                 FROM users WHERE user_id=?""", (partner_id,))
+    c.execute("SELECT first_name, streak, reputation FROM users WHERE user_id=?", (partner_id,))
     partner = c.fetchone()
     conn.close()
-
+    
     if partner:
         await update.message.reply_text(
             f"👥 *Your Study Partner*\n\n"
             f"👤 *Name:* {partner[0]}\n"
             f"🔥 *Streak:* {partner[1]} days\n"
-            f"⭐ *Reputation:* {partner[2]}/100\n\n"
-            f"💬 Motivate each other!",
+            f"⭐ *Reputation:* {partner[2]}/100",
             parse_mode="Markdown"
         )
+    else:
+        await update.message.reply_text("⚠️ *Partner not found*", parse_mode="Markdown")
 
-# ================= RULES =================
+# ================= RULES COMMAND =================
 async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 *PrepRoom Accountability Rules*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ *Daily Check-in*\n"
-        "• Use /checkin every day\n"
-        "• Partner gets notified when you check in\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔥 *Streaks*\n"
-        "• +1 streak each consecutive day\n"
-        "• Miss a day = streak resets\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⭐ *Reputation*\n"
-        "• Start at 40 points\n"
-        "• +2 per check-in\n"
-        "• -5 per missed day\n"
-        "• Tiers: 🥉Bronze → 🥈Silver → 🥇Gold → 💎Diamond\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👻 *Ghost Rules*\n"
-        "• Day 1 missed = Reminder\n"
-        "• Day 2 missed = Warning\n"
-        "• Day 3 missed = -15 rep + partner reassigned\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 *Commands*\n"
-        "• /checkin — Mark today studied\n"
-        "• /streak — Your stats\n"
-        "• /partner — Partner details\n"
-        "• /rules — This message\n"
-        "• /report — Report inactive partner\n\n"
-        "💪 *Consistency beats perfection!*",
-        parse_mode="Markdown"
-    )
+    rules_text = """
+📋 *PrepRoom Accountability Rules*
 
-# ================= REPORT =================
+✅ *Daily Check-in:* /checkin
+• +2 reputation for consecutive days
+• -5 reputation if you miss a day
+
+🔥 *Streaks reset if you miss 1 day*
+
+⭐ *Reputation starts at 40*
+• 0-49: Bronze
+• 50-74: Silver
+• 75-89: Gold
+• 90-100: Diamond
+
+👻 *Inactive 2+ days?* Partner can /report you
+
+💪 *Your partner is counting on you!*
+"""
+    await update.message.reply_text(rules_text, parse_mode="Markdown")
+
+# ================= REPORT COMMAND =================
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT partner_id, first_name
-                 FROM users WHERE user_id=?""", (user_id,))
+    c.execute("SELECT partner_id, first_name FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     conn.close()
-
+    
     if not row or not row[0]:
-        await update.message.reply_text(
-            "❌ *No partner to report!*",
-            parse_mode="Markdown")
+        await update.message.reply_text("❌ *No partner to report!*", parse_mode="Markdown")
         return
-
+    
     partner_id, partner_name = row
-
+    
     await update.message.reply_text(
-        f"⚠️ *Report submitted!*\n\n"
-        f"Admin will review within 24 hours. 💪",
+        f"⚠️ *Report submitted for {partner_name}*\n\nAdmin will review.",
         parse_mode="Markdown"
     )
-
+    
     await context.bot.send_message(
         chat_id=ADMIN_USER_ID,
-        text=f"🚨 *INACTIVITY REPORT*\n\n"
-             f"📢 *By:* User `{user_id}`\n"
-             f"👤 *Reported:* {partner_name} (`{partner_id}`)\n\n"
-             f"📝 Investigate and reassign if needed.",
+        text=f"🚨 *INACTIVITY REPORT*\n\nUser `{user_id}` reported partner `{partner_id}`",
         parse_mode="Markdown"
     )
 
 # ================= ADMIN: GROUP READY =================
 async def group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "❌ *Admin only!*",
-            parse_mode="Markdown")
+        await update.message.reply_text("❌ *Admin only!*", parse_mode="Markdown")
         return
-
+    
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT match_id, user1_id, user2_id
-                 FROM pending_groups WHERE status='pending' LIMIT 1""")
+    c.execute("SELECT match_id, user1_id, user2_id FROM pending_groups WHERE status='pending' LIMIT 1")
     match = c.fetchone()
-
+    
     if not match:
-        await update.message.reply_text(
-            "ℹ️ *No pending matches.*",
-            parse_mode="Markdown")
+        await update.message.reply_text("ℹ️ No pending matches", parse_mode="Markdown")
         conn.close()
         return
-
+    
     match_id, u1, u2 = match
     group_id = update.effective_chat.id
-
-    c.execute("""UPDATE users SET group_id=?
-                 WHERE user_id IN (?, ?)""", (group_id, u1, u2))
-    c.execute("""UPDATE pending_groups SET status='done'
-                 WHERE match_id=?""", (match_id,))
+    
+    c.execute("UPDATE users SET group_id=? WHERE user_id IN (?, ?)", (group_id, u1, u2))
+    c.execute("UPDATE pending_groups SET status='done' WHERE match_id=?", (match_id,))
     conn.commit()
     conn.close()
+    
+    await update.message.reply_text("✅ Group linked successfully!")
 
-    await update.message.reply_text(
-        "✅ *Group linked successfully!*\n\n"
-        "Students can now use /checkin in this group!",
-        parse_mode="Markdown"
-    )
-
-# ================= ADMIN: PENDING =================
+# ================= ADMIN: PENDING MATCHES =================
 async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "❌ *Admin only!*",
-            parse_mode="Markdown")
+        await update.message.reply_text("❌ *Admin only!*", parse_mode="Markdown")
         return
-
+    
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""SELECT match_id, user1_id, user2_id, matched_at
-                 FROM pending_groups WHERE status='pending'""")
+    c.execute("SELECT match_id, user1_id, user2_id, matched_at FROM pending_groups WHERE status='pending'")
     matches = c.fetchall()
     conn.close()
-
+    
     if not matches:
-        await update.message.reply_text(
-            "✅ *No pending matches!*",
-            parse_mode="Markdown")
+        await update.message.reply_text("✅ No pending matches", parse_mode="Markdown")
         return
-
+    
     msg = "📋 *Pending Matches:*\n\n"
     for m in matches:
-        msg += f"🔹 *Match #{m[0]}*\n"
-        msg += f"   User1: `{m[1]}`\n"
-        msg += f"   User2: `{m[2]}`\n"
-        msg += f"   Matched: {m[3]}\n\n"
-
+        msg += f"Match #{m[0]}: User {m[1]} & User {m[2]}\nMatched: {m[3]}\n\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# ================= MAIN =================
+# ================= GHOST DETECTION =================
+async def check_ghosts(context: ContextTypes.DEFAULT_TYPE):
+    """Automatically detect users inactive for 2+ days and penalize them"""
+    print(f"🕐 Running ghost detection at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    logger.info("Running ghost detection check")
+    
+    conn = get_conn()
+    c = conn.cursor()
+    
+    two_days_ago = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
+    
+    # Find users who haven't checked in for 2+ days and have a partner
+    c.execute("""
+        SELECT user_id, partner_id, first_name, reputation, last_checkin
+        FROM users 
+        WHERE (last_checkin < ? OR last_checkin IS NULL)
+        AND partner_id IS NOT NULL 
+        AND status = 'active'
+    """, (two_days_ago,))
+    
+    ghosts = c.fetchall()
+    
+    if not ghosts:
+        print("   ✅ No ghosts found - all users active!")
+        logger.info("No ghosts found")
+        conn.close()
+        return
+    
+    print(f"   👻 Found {len(ghosts)} ghost(s) to process")
+    
+    for ghost_id, partner_id, ghost_name, reputation, last_checkin in ghosts:
+        # Calculate penalty
+        new_reputation = max(0, reputation - 15)
+        days_inactive = (datetime.utcnow() - datetime.strptime(last_checkin, "%Y-%m-%d")).days if last_checkin else 99
+        
+        print(f"   Processing ghost: {ghost_name} (ID: {ghost_id}) - Inactive for {days_inactive} days")
+        
+        # Remove partner from ghost and apply penalty
+        c.execute("""
+            UPDATE users 
+            SET reputation = ?, partner_id = NULL, status = 'ghosted' 
+            WHERE user_id = ?
+        """, (new_reputation, ghost_id))
+        
+        # Remove partner from other user
+        c.execute("""
+            UPDATE users 
+            SET partner_id = NULL 
+            WHERE user_id = ?
+        """, (partner_id,))
+        
+        # Notify ghost
+        try:
+            await context.bot.send_message(
+                chat_id=ghost_id,
+                text=f"👻 *You've been marked as INACTIVE!*\n\n"
+                     f"You missed {days_inactive} days of check-ins.\n\n"
+                     f"• Reputation: -15 points (now {new_reputation}/100)\n"
+                     f"• Your study partner has been reassigned\n\n"
+                     f"Use /start to find a new partner and rebuild your streak! 💪",
+                parse_mode="Markdown"
+            )
+            print(f"      ✅ Notified ghost {ghost_name}")
+        except Exception as e:
+            logger.error(f"Could not notify ghost {ghost_id}: {e}")
+        
+        # Notify partner
+        try:
+            await context.bot.send_message(
+                chat_id=partner_id,
+                text=f"😔 *Your study partner {ghost_name} has been inactive for {days_inactive} days.*\n\n"
+                     f"Don't worry! We'll find you a new partner.\n\n"
+                     f"Use /start to get rematched immediately! 🔥",
+                parse_mode="Markdown"
+            )
+            print(f"      ✅ Notified partner {partner_id}")
+        except Exception as e:
+            logger.error(f"Could not notify partner {partner_id}: {e}")
+        
+        # Try to find a new match for the partner
+        c.execute("SELECT exam, study_time, first_name FROM users WHERE user_id=?", (partner_id,))
+        partner_data = c.fetchone()
+        
+        if partner_data:
+            partner_exam, partner_time, partner_name = partner_data
+            
+            # Find another user in waiting queue
+            c.execute("""
+                SELECT user_id, first_name FROM waiting_queue 
+                WHERE exam = ? AND study_time = ? 
+                LIMIT 1
+            """, (partner_exam, partner_time))
+            
+            new_match = c.fetchone()
+            
+            if new_match:
+                new_partner_id, new_partner_name = new_match
+                
+                print(f"      🔄 Rematching {partner_name} with {new_partner_name}")
+                
+                # Link new partners
+                now = datetime.utcnow().isoformat()
+                c.execute("UPDATE users SET partner_id = ?, matched_at = ? WHERE user_id = ?", 
+                         (new_partner_id, now, partner_id))
+                c.execute("UPDATE users SET partner_id = ?, matched_at = ? WHERE user_id = ?", 
+                         (partner_id, now, new_partner_id))
+                c.execute("DELETE FROM waiting_queue WHERE user_id = ?", (new_partner_id,))
+                
+                # Create new pending group
+                c.execute("""
+                    INSERT INTO pending_groups (user1_id, user2_id, matched_at, status)
+                    VALUES (?, ?, ?, 'pending')
+                """, (partner_id, new_partner_id, now))
+                
+                conn.commit()
+                
+                # Notify both about new match
+                try:
+                    await context.bot.send_message(
+                        chat_id=partner_id,
+                        text=f"🎉 *Great news! We found you a new partner!*\n\n"
+                             f"Your new study partner is *{new_partner_name}*\n\n"
+                             f"Admin will create your new study group soon. Keep using /checkin daily! 💪",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=new_partner_id,
+                        text=f"🎉 *You've been matched with a new study partner!*\n\n"
+                             f"Your new study partner is *{partner_name}*\n\n"
+                             f"Admin will create your study group soon. Keep using /checkin daily! 💪",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                
+                # Notify admin about rematch
+                await context.bot.send_message(
+                    chat_id=ADMIN_USER_ID,
+                    text=f"🔄 *REMATCH NOTIFICATION*\n\n"
+                         f"User {partner_name} (ID: {partner_id}) was ghosted by {ghost_name}\n"
+                         f"✓ Rematched with {new_partner_name} (ID: {new_partner_id})\n\n"
+                         f"📝 New group needed for this pair!",
+                    parse_mode="Markdown"
+                )
+                print(f"      ✅ Rematch complete - Admin notified")
+            else:
+                print(f"      ⏳ No available match for {partner_name} - added to waiting queue")
+                # Add partner back to waiting queue if no match found
+                c.execute("""
+                    INSERT INTO waiting_queue (user_id, exam, study_time, language, joined_at)
+                    SELECT user_id, exam, study_time, language, ? 
+                    FROM users WHERE user_id = ?
+                """, (datetime.utcnow().isoformat(), partner_id))
+    
+    conn.commit()
+    conn.close()
+    print(f"   ✅ Ghost detection completed - Processed {len(ghosts)} ghosts")
+    logger.info(f"Ghost detection completed - Processed {len(ghosts)} ghosts")
+    
+# ================= MAIN FUNCTION =================
 def main():
     print("=" * 50)
     print("🚀 PREPROOM ACCOUNTABILITY BOT")
     print("=" * 50)
-
+    
     if not TOKEN:
-        print("❌ ERROR: TOKEN not set!")
+        logger.error("❌ TOKEN not set!")
+        print("ERROR: Please set TOKEN in Railway environment variables")
         return
-
+    
     if ADMIN_USER_ID == 0:
-        print("❌ ERROR: ADMIN_USER_ID not set!")
+        logger.error("❌ ADMIN_USER_ID not set!")
+        print("ERROR: Please set ADMIN_USER_ID in Railway environment variables")
         return
-
-    print(f"✅ Token loaded")
+    
+    print(f"✅ Bot Token: {TOKEN[:10]}...")
     print(f"✅ Admin ID: {ADMIN_USER_ID}")
     print("=" * 50)
-
+    
     setup_db()
-
+    
     app = Application.builder().token(TOKEN).build()
-
-    job_queue = app.job_queue
-    job_queue.run_daily(
-        morning_reminder,
-        time=dtime(hour=8, minute=0, second=0, tzinfo=INDIA_TZ)
-    )
-    job_queue.run_daily(
-        daily_check,
-        time=dtime(hour=12, minute=0, second=0, tzinfo=INDIA_TZ)
-    )
-
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("checkin", checkin))
     app.add_handler(CommandHandler("streak", streak_cmd))
@@ -737,9 +846,9 @@ def main():
     app.add_handler(CommandHandler("group_ready", group_ready))
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    print("🎯 Bot is running!")
-    print("=" * 50)
+    
+    print("🎯 PrepRoom Bot is running!")
+    logger.info("🚀 PrepRoom Bot started successfully!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
