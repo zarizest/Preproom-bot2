@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 TOKEN = os.getenv("TOKEN","8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
 
-DB_NAME = "preproom.db"
+DB_NAME = "/app/data/preproom.db"
 INDIA_TZ = pytz.timezone("Asia/Kolkata")
 
 logging.basicConfig(
@@ -88,7 +88,9 @@ LANGUAGES = [
 
 # ================= DATABASE =================
 def get_conn():
-    return sqlite3.connect(DB_NAME)
+    # Create data directory if it doesn't exist (for persistent storage)
+    os.makedirs("/app/data", exist_ok=True)
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
 
 def setup_db():
     conn = get_conn()
