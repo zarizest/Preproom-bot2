@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # ================= CONFIGURATION =================
-TOKEN = os.getenv("8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
+TOKEN = os.getenv("TOKEN", "8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
 
 DB_NAME = "preproom.db"
