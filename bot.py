@@ -1708,3 +1708,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+async def exportdata(update, context):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users")
+    rows = cursor.fetchall()
+    msg = f"Total users: {len(rows)}\n\n"
+    for row in rows:
+        msg += f"{row}\n"
+    await update.message.reply_text(msg[:4000])
+
+app.add_handler(CommandHandler("exportdata", exportdata))
