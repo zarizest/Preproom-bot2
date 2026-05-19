@@ -1696,6 +1696,8 @@ def main():
     app.add_handler(CommandHandler("ban", ban_cmd))
     app.add_handler(CommandHandler("unban", unban_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    app.add_handler(CommandHandler("exportdata", exportdata))
+    app.add_handler(CommandHandler("checkdb", exportdata))
 
     # Callback and message handlers
     app.add_handler(CallbackQueryHandler(button_handler))
