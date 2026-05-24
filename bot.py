@@ -9,9 +9,9 @@ from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           ContextTypes, MessageHandler, filters)
 
 # ================= CONFIGURATION =================
-TOKEN = os.getenv("TOKEN")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
-BOT_USERNAME = os.getenv("BOT_USERNAME", "PrepRoomAccBot")
+TOKEN = os.getenv("8274139210:AAGylh8LVrddr62E4LnDI2UCkQ-Jb1ovspI")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8456901459"))
+BOT_USERNAME = os.getenv("BOT_USERNAME", "PrepRoom")
 
 DB_NAME = os.getenv("DB_NAME", "/data/preproom.db")
 INDIA_TZ = pytz.timezone("Asia/Kolkata")
